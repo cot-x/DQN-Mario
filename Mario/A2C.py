@@ -4,6 +4,13 @@
 # In[ ]:
 
 
+#from comet_ml import Experiment
+#experiment = Experiment()
+
+
+# In[ ]:
+
+
 import os
 import random
 import argparse
@@ -461,6 +468,7 @@ class Environment:
 
         for key in hyper_params.keys():
             print(f'{key}: {hyper_params[key]}')
+        #experiment.log_parameters(hyper_params)
         
         (state, _) = self.env.reset()
         rewards = []
@@ -476,6 +484,8 @@ class Environment:
             self.agent.memorize(state, action, state_next, reward)
             loss = self.agent.update()
             state = state_next
+            
+            #experiment.log_metric('Loss', loss) if loss else None
             
             if done:
                 (state, _) = self.env.reset()
@@ -545,8 +555,8 @@ if __name__ == '__main__':
     parser.add_argument('--env_name', type=str, default='ppaquette/SuperMarioBros-1-1-v0')
     parser.add_argument('--weight_dir', type=str, default='weights')
     parser.add_argument('--lr', type=float, default=0.0001)
-    parser.add_argument('--mem_capacity', type=int, default=64)
-    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--mem_capacity', type=int, default=10000)
+    parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_updates', type=int, default=100000)
     parser.add_argument('--cpu', action='store_true')
     parser.add_argument('--savemovie', action='store_true')

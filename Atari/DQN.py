@@ -1,7 +1,14 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[2]:
+# In[ ]:
+
+
+#from comet_ml import Experiment
+#experiment = Experiment()
+
+
+# In[ ]:
 
 
 import os
@@ -28,7 +35,7 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
-# In[3]:
+# In[ ]:
 
 
 class NoopEnv(gym.Wrapper):
@@ -57,7 +64,7 @@ class NoopEnv(gym.Wrapper):
         return self.env.step(ac)
 
 
-# In[4]:
+# In[ ]:
 
 
 class EpisodicLifeEnv(gym.Wrapper):
@@ -84,7 +91,7 @@ class EpisodicLifeEnv(gym.Wrapper):
         return obs
 
 
-# In[5]:
+# In[ ]:
 
 
 class MaxAndSkipEnv(gym.Wrapper):
@@ -112,7 +119,7 @@ class MaxAndSkipEnv(gym.Wrapper):
         return self.env.reset(**kwargs)
 
 
-# In[6]:
+# In[ ]:
 
 
 class SkipEnv(gym.Wrapper):
@@ -134,7 +141,7 @@ class SkipEnv(gym.Wrapper):
         return self.env.reset(**kwargs)
 
 
-# In[7]:
+# In[ ]:
 
 
 class IncScoreEnv(gym.Wrapper):
@@ -150,7 +157,7 @@ class IncScoreEnv(gym.Wrapper):
         return self.env.reset(**kwargs)
 
 
-# In[8]:
+# In[ ]:
 
 
 class WarpFrame(gym.ObservationWrapper):
@@ -166,7 +173,7 @@ class WarpFrame(gym.ObservationWrapper):
         return frame[:, :, None]
 
 
-# In[9]:
+# In[ ]:
 
 
 class WrapForPyTorch(gym.ObservationWrapper):
@@ -180,7 +187,7 @@ class WrapForPyTorch(gym.ObservationWrapper):
         return observation.transpose(2, 0, 1)
 
 
-# In[10]:
+# In[ ]:
 
 
 class Util:
@@ -210,7 +217,7 @@ class Util:
         return _thunk
 
 
-# In[11]:
+# In[ ]:
 
 
 class ResidualBlock(nn.Module):
@@ -231,7 +238,7 @@ class ResidualBlock(nn.Module):
         return F.relu(self.residual(x) + shortcut, inplace=True)
 
 
-# In[12]:
+# In[ ]:
 
 
 class SelfAttention(nn.Module):
@@ -261,7 +268,7 @@ class SelfAttention(nn.Module):
         return out#, attention_map_T.permute(0, 2, 1)
 
 
-# In[13]:
+# In[ ]:
 
 
 class Flatten(nn.Module):
@@ -269,7 +276,7 @@ class Flatten(nn.Module):
         return x.view(x.size(0), -1)
 
 
-# In[14]:
+# In[ ]:
 
 
 class Net(nn.Module):
@@ -315,13 +322,13 @@ class Net(nn.Module):
         return action
 
 
-# In[15]:
+# In[ ]:
 
 
 Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
 
 
-# In[16]:
+# In[ ]:
 
 
 class ReplayMemory:
@@ -343,7 +350,7 @@ class ReplayMemory:
         return len(self.memory)
 
 
-# In[17]:
+# In[ ]:
 
 
 class Brain:
@@ -409,7 +416,7 @@ class Brain:
         return self.net.act(state.to(self.device))
 
 
-# In[18]:
+# In[ ]:
 
 
 class Agent:
@@ -426,7 +433,7 @@ class Agent:
         self.brain.memory.push(state, action, next_state, reward)
 
 
-# In[19]:
+# In[ ]:
 
 
 class Environment:
@@ -466,6 +473,7 @@ class Environment:
             state = state_next
             
             loss = loss.cpu().item() if loss is not None else None
+            #experiment.log_metric('Loss', loss)
             
             self.env.render()
             #print(f'action: {action.cpu().item()} reward: {reward.item()}')
@@ -518,7 +526,7 @@ class Environment:
         display_frames_as_gif(frames)
 
 
-# In[20]:
+# In[ ]:
 
 
 def display_frames_as_gif(frames):
@@ -540,7 +548,7 @@ def display_frames_as_gif(frames):
     HTML(anim.to_jshtml())
 
 
-# In[21]:
+# In[ ]:
 
 
 def main(args):
@@ -555,13 +563,14 @@ def main(args):
     
     for key in hyper_params.keys():
         print(f'{key}: {hyper_params[key]}')
+    #experiment.log_parameters(hyper_params)
     
     env = Environment(args.env_name, args.cpu, args.lr, args.gamma, args.batch_size, args.mem_capacity, args.num_updates)
     env.train(args.weight_dir)
     #env.save_movie()
 
 
-# In[22]:
+# In[ ]:
 
 
 if __name__ == '__main__':
@@ -571,8 +580,8 @@ if __name__ == '__main__':
     parser.add_argument('--weight_dir', type=str, default='weights')
     parser.add_argument('--lr', type=float, default=1e-10)
     parser.add_argument('--gamma', type=float, default=0.99)
-    parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--mem_capacity', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--mem_capacity', type=int, default=10000)
     parser.add_argument('--num_updates', type=int, default=int(1e5))
     parser.add_argument('--cpu', action='store_true')
     
