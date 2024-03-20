@@ -438,7 +438,7 @@ class Agent:
 
 class Environment:
     def __init__(self, env_name, use_cpu, lr, gamma, batch_size, mem_capacity, num_updates):
-        seed = 1
+        seed = None
         if seed is not None:
             torch.manual_seed(seed)
             if not use_cpu:
