@@ -47,10 +47,13 @@ class Mario:
     ACT_DASH_RIGHT = [0,0,0,1,0,1]
     ACT_DOWN = [0,0,1,0,0,0]
     ACT_JUMP = [0,0,0,0,1,0]
-    ACT_COUNTS = 7
+    ACT_JUMP_LEFT = [0,1,0,0,1,0]
+    ACT_JUMP_RIGHT = [0,0,0,1,1,0]
+    ACT_COUNTS = 9
 
     ACTIONS = { 0: ACT_NONE, 1: ACT_LEFT, 2: ACT_RIGHT,
-                3: ACT_DASH_LEFT, 4: ACT_DASH_RIGHT, 5: ACT_DOWN, 6: ACT_JUMP }
+                3: ACT_DASH_LEFT, 4: ACT_DASH_RIGHT, 5: ACT_DOWN,
+                6: ACT_JUMP, 7: ACT_JUMP_LEFT, 8: ACT_JUMP_RIGHT }
 
 
 # In[ ]:
