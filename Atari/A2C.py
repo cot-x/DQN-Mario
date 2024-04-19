@@ -188,7 +188,7 @@ class SelfAttention(nn.Module):
         self.value_conv = nn.Conv2d(input_nc, input_nc, kernel_size=3, stride=1, padding=1)
         
         self.softmax = nn.Softmax(dim=-2)
-        self.gamma = nn.Parameter(torch.zeros(1))
+        self.gamma = nn.Parameter(torch.randn(1))
         
     def forward(self, x, return_map=False):
         proj_query = self.query_conv(x).view(x.shape[0], -1, x.shape[2] * x.shape[3]).permute(0, 2, 1)
@@ -206,6 +206,71 @@ class SelfAttention(nn.Module):
             return out, attention_map_T.permute(0, 2, 1)
         else:
             return out
+
+
+# In[ ]:
+
+
+class LambdaLayer(nn.Module):
+    def __init__(self, dim_in, dim_out=None, dim_depth=16, heads=4, dim_u=1, dim_recept=23):
+        super().__init__()
+        self.heads = heads
+        
+        dim_out = dim_in if dim_out is None else dim_out
+        
+        self.dim_depth = dim_depth
+        self.dim_u = dim_u
+        assert (dim_out % heads) == 0, 'must divide by heads for multi-head query'
+        dim_v = dim_out // heads
+        self.dim_v = dim_v
+        
+        self.queries = nn.Sequential(
+            nn.Conv2d(dim_in, dim_depth * heads, 1, bias=False),
+            nn.BatchNorm2d(dim_depth * heads)
+        )
+        self.keys = nn.Conv2d(dim_in, dim_depth * dim_u, 1, bias=False)
+        self.values = nn.Sequential(
+            nn.Conv2d(dim_in, dim_v * dim_u, 1, bias=False),
+            nn.BatchNorm2d(dim_v * dim_u)
+        )
+        self.softmax = nn.Softmax(dim=-1)
+        
+        self.local_context = True if dim_recept > 0 else False
+        if self.local_context:
+            assert (dim_recept % 2) == 1, 'receptive kernel size must be odd'
+            r = dim_recept
+            self.embedding = nn.Parameter(torch.randn([dim_depth, dim_u, 1, r, r]))
+            self.padding = (r - 1) // 2
+        else:
+            self.embedding = nn.Parameter(torch.randn([dim_depth, dim_u]))
+        
+        self.gamma = nn.Parameter(torch.randn(1))
+
+    def forward(self, x):
+        b, c, h, w = x.size()
+
+        queries = self.queries(x).view(b, self.heads, self.dim_depth, h * w)
+        softmax = self.softmax(self.keys(x).view(b, self.dim_depth, self.dim_u, h * w))
+        values = self.values(x).view(b, self.dim_v, self.dim_u, h * w)
+
+        lambda_c = torch.einsum('bkun,bvun->bkv', softmax, values)
+        y_c = torch.einsum('bhkn,bkv->bhvn', queries, lambda_c)
+
+        if self.local_context:
+            values = values.view(b, self.dim_u, -1, h, w)
+            lambda_p = F.conv3d(values, self.embedding, padding=(0, self.padding, self.padding))
+            lambda_p = lambda_p.view(b, self.dim_depth, self.dim_v, h * w)
+            y_p = torch.einsum('bhkn,bkvn->bhvn', queries, lambda_p)
+        else:
+            lambda_p = torch.einsum('ku,bvun->bkvn', self.embedding, values)
+            y_p = torch.einsum('bhkn,bkvn->bhvn', queries, lambda_p)
+
+        out = y_c + y_p
+        out = out.reshape(b, -1, h, w)
+        
+        out = out + self.gamma * out
+        
+        return out
 
 
 # In[ ]:
@@ -241,7 +306,8 @@ class Net(nn.Module):
             ]
             conv_dim *= 2
         
-        model += [SelfAttention(conv_dim)]
+        #model += [SelfAttention(conv_dim)]
+        model += [LambdaLayer(conv_dim)]
         
         model += [
             nn.Conv2d(conv_dim, dim_out, kernel_size=4, stride=2, padding=1),
@@ -403,9 +469,10 @@ class Brain:
         self.load_state()
     
     def weights_init(self, module):
-        if type(module) == nn.Conv2d or type(module) == nn.Linear:
+        if type(module) == nn.Linear or type(module) == nn.Conv2d or type(module) == nn.ConvTranspose2d:
             nn.init.kaiming_normal_(module.weight)
-            module.bias.data.fill_(0)
+            if module.bias is not None:
+                module.bias.data.fill_(0)
     
     def save_state(self, weight_dir, epoch):
         self.a2c.cpu()
