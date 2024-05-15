@@ -22,6 +22,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import torchvision.transforms as transforms
 from torch.autograd import Variable
 
 import gym
@@ -160,82 +161,19 @@ class IncScoreEnv(gym.Wrapper):
 # In[ ]:
 
 
-class WarpFrame(gym.ObservationWrapper):
+class TransformsFrame(gym.ObservationWrapper):
     def __init__(self, env):
         super().__init__(env)
         self.width = 128
         self.height = 128
-        self.observation_space = Box(low=0, high=255, shape=(self.height, self.width, 1), dtype=np.uint8)
+        self.observation_space = Box(low=0, high=1, shape=(self.height, self.width, 1), dtype=np.float64)
         
     def observation(self, frame):
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
-        return frame[:, :, None]
-
-
-# In[ ]:
-
-
-class WrapForPyTorch(gym.ObservationWrapper):
-    def __init__(self, env=None):
-        super().__init__(env)
-        obs_shape = self.observation_space.shape # H, W, C -> C, H, W
-        self.observation_space = Box(self.observation_space.low[0,0,0], self.observation_space.high[0,0,0],
-                                    [obs_shape[2], obs_shape[0], obs_shape[1]], dtype=self.observation_space.dtype)
-        
-    def observation(self, observation):
-        return observation.transpose(2, 0, 1)
-
-
-# In[ ]:
-
-
-class Util:
-    @staticmethod
-    def make_env(env_id, seed=None):
-        def _thunk():
-            env = gym.make(env_id)
-            env = NoopEnv(env, noop_max=30)
-            env = MaxAndSkipEnv(env, skip=4)
-            if seed is not None:
-                env.seed(seed)
-            env = EpisodicLifeEnv(env)
-            #env = IncScoreEnv(env)
-            env = WarpFrame(env)
-            env = WrapForPyTorch(env)
-            return env
-        return _thunk
-
-    @staticmethod
-    def make_env_play(env_id, seed=None):
-        def _thunk():
-            env = gym.make(env_id)
-            env = SkipEnv(env, skip=4)
-            if seed is not None:
-                env.seed(seed)
-            return env
-        return _thunk
-
-
-# In[ ]:
-
-
-class ResidualBlock(nn.Module):
-    def __init__(self, in_features):
-        super().__init__()
-
-        self.shortcut = nn.Sequential()
-        self.residual = nn.Sequential(
-            nn.Conv2d(in_features, in_features, kernel_size=3, stride=1, padding=1),
-            nn.InstanceNorm2d(in_features),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_features, in_features, kernel_size=3, stride=1, padding=1),
-            nn.InstanceNorm2d(in_features)
-        )
-
-    def forward(self, x):
-        shortcut = self.shortcut(x)
-        return F.relu(self.residual(x) + shortcut, inplace=True)
+        frame = frame.transpose(2, 0, 1) # H, W, C -> C, H, W
+        frame = torch.from_numpy(frame).float().unsqueeze(0) / 255.0
+        frame_tarns = transforms.functional.resize(frame, (self.width, self.height))
+        frame_tarns = transforms.functional.rgb_to_grayscale(frame_tarns)
+        return (frame_tarns, frame)
 
 
 # In[ ]:
@@ -511,33 +449,51 @@ class Environment:
             if not use_cpu:
                 torch.cuda.manual_seed(seed)
         
-        self.env = Util.make_env(env_name, seed)()
-        self.env_play = Util.make_env_play(env_name, seed)()
+        self.env = self.make_env(env_name, seed)
+        self.env_name = env_name
+        self.seed = seed
         
         self.num_actions = self.env.action_space.n
         self.agent = Agent(use_cpu, self.num_actions, lr, gamma, batch_size, mem_capacity)
         
         self.num_updates = num_updates
-        
+    
+    def make_env(self, env_name, seed):
+        env = gym.make(env_name)
+        env = NoopEnv(env, noop_max=30)
+        env = MaxAndSkipEnv(env, skip=4)
+        if seed is not None:
+            env.seed(seed)
+        env = EpisodicLifeEnv(env)
+        #env = IncScoreEnv(env)
+        env = TransformsFrame(env)
+        return env
+    
+    def make_env_play(self, env_name, seed):
+        env = gym.make(env_name)
+        env = SkipEnv(env, skip=4)
+        if seed is not None:
+            env.seed(seed)
+        env = TransformsFrame(env)
+        return env
+    
     def train(self, weight_dir):
-        state = self.env.reset()
-        state = torch.from_numpy(state).float().unsqueeze(0)
+        (state, _) = self.env.reset()
         rewards = []
         frame_num = 0
         max_frame_num = 0
         done_num = 0
         for i in tqdm(range(self.num_updates)):
             action = self.agent.get_action(state)
-            state_next, reward, done, _ = self.env.step(action)
+            (state_next, _), reward, done, _ = self.env.step(action)
             frame_num += 1
             
             rewards.append(reward)
-            
-            state_next = torch.from_numpy(state_next).float().unsqueeze(0)
             reward = torch.FloatTensor([reward])
             self.agent.memorize(state, action, state_next, reward)
-            loss = self.agent.update_q_functions()
             state = state_next
+            
+            loss = self.agent.update_q_functions()
             
             loss = loss.cpu().item() if loss is not None else None
             #experiment.log_metric('Loss', loss)
@@ -546,8 +502,7 @@ class Environment:
             #print(f'action: {action.cpu().item()} reward: {reward.item()}')
             
             if done:
-                state = self.env.reset()
-                state = torch.from_numpy(state).float().unsqueeze(0)
+                (state, _) = self.env.reset()
                 done_num += 1
                 max_frame_num = max(max_frame_num, frame_num)
                 frame_num = 0
@@ -563,56 +518,37 @@ class Environment:
         torch.save(self.agent.brain.net.state_dict(), os.path.join(weight_dir, 'weight.latest.pth'))
     
     def save_movie(self):
-        state = self.env.reset()
-        state = torch.from_numpy(state).float().unsqueeze(0)
-        frames = [self.env_play.reset()]
-        frame_num = 0
+        self.env_play = self.make_env_play(self.env_name, self.seed)
+        (state, frame) = self.env_play.reset()
+        frames = [state[0]]
+        
         while True:
             action = self.agent.get_action(state)
-            state_next, reward, done, _ = self.env.step(action)
-            
-            frame, _, _, _ = self.env_play.step(action)
-            frames.append(frame)
-            frame_num += 1
-            
-            state_next = torch.from_numpy(state_next).float().unsqueeze(0)
-            reward = torch.FloatTensor([reward])
-            self.agent.memorize(state, action, state_next, reward)
-            state = state_next
-            
-            self.env.render()
+            (state, frame), _, done, _ = self.env_play.step(action)
+            frames += [frame[0]]
             self.env_play.render()
-            
             if done:
-                #state = self.env.reset()
-                #state = torch.from_numpy(state).float().unsqueeze(0)
-                #frames = [self.env_play.reset()]
-                #frame_num = 0
                 break
-                
-        display_frames_as_gif(frames)
-
-
-# In[ ]:
-
-
-def display_frames_as_gif(frames):
-    get_ipython().run_line_magic('matplotlib', 'inline')
-    import matplotlib.pyplot as plt
-    from matplotlib import animation
-    from IPython.display import HTML
-
-    base = min(frames[0].shape[1], frames[0].shape[0])
-    plt.figure(figsize=(frames[0].shape[1] / base * 6, frames[0].shape[0] / base * 6), dpi=72, tight_layout=True)
-    patch = plt.imshow(frames[0])
-    plt.axis('off')
-    
-    def animate(i):
-        patch.set_data(frames[i])
         
-    anim = animation.FuncAnimation(plt.gcf(), animate, frames=len(frames), interval=20)
-    anim.save('output.gif', writer=animation.PillowWriter())
-    HTML(anim.to_jshtml())
+        self.env_play.close()
+        self.save_frames_as_gif(frames)
+    
+    def save_frames_as_gif(self, frames):
+        import matplotlib.pyplot as plt
+        from matplotlib import animation
+        
+        ToPIL = transforms.ToPILImage()
+        
+        base = min(frames[0].shape[1], frames[0].shape[2])
+        plt.figure(figsize=(frames[0].shape[1] / base * 6, frames[0].shape[2] / base * 6), dpi=72, tight_layout=True)
+        patch = plt.imshow(ToPIL(frames[0]))
+        plt.axis('off')
+
+        def animate(i):
+            patch.set_data(ToPIL(frames[i]))
+
+        anim = animation.FuncAnimation(plt.gcf(), animate, frames=len(frames), interval=1)
+        anim.save('output.gif', writer=animation.PillowWriter(fps=100))
 
 
 # In[ ]:
@@ -645,7 +581,7 @@ if __name__ == '__main__':
     parser.add_argument('--env_name', type=str, default='BreakoutNoFrameskip-v4')
     #parser.add_argument('--env_name', type=str, default='BeamRider-v0')
     parser.add_argument('--weight_dir', type=str, default='weights')
-    parser.add_argument('--lr', type=float, default=1e-10)
+    parser.add_argument('--lr', type=float, default=0.0001)
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--mem_capacity', type=int, default=10000)

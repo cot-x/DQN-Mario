@@ -119,13 +119,14 @@ class TransformsFrame(gym.ObservationWrapper):
         super().__init__(env)
         self.width = 128
         self.height = 128
-        self.observation_space = Box(low=0, high=1, shape=(self.height, self.width, 3), dtype=np.float64)
+        self.observation_space = Box(low=0, high=1, shape=(self.height, self.width, 1), dtype=np.float64)
         
     def observation(self, frame):
         frame = frame.transpose(2, 0, 1) # H, W, C -> C, H, W
         frame = torch.from_numpy(frame).float().unsqueeze(0) / 255.0
-        frame = transforms.functional.resize(frame, (self.width, self.height))
-        return frame
+        frame_tarns = transforms.functional.resize(frame, (self.width, self.height))
+        frame_tarns = transforms.functional.rgb_to_grayscale(frame_tarns)
+        return (frame_tarns, frame)
 
 
 # In[ ]:
@@ -235,7 +236,7 @@ class Flatten(nn.Module):
 
 
 class Net(nn.Module):
-    def __init__(self, n_out, num_channels=3, conv_dim=64, n_repeat=3):
+    def __init__(self, n_out, num_channels=1, conv_dim=64, n_repeat=1):
         super().__init__()
         
         model = [
@@ -408,35 +409,54 @@ class Agent:
 
 class Environment:
     def __init__(self, args):
-        self.env_name = args.env_name
-        self.weight_dir = args.weight_dir
+        self.args = args
         
-        self.env = self.make_env(self.env_name)
+        self.env = self.make_env(self.args.env_name)
+        self.env_play = None
         
         self.num_buttons = self.env.action_space.shape[0]
         self.num_actions = 2 ** self.num_buttons
         self.agent = Agent(args.cpu, self.num_actions, args.lr, args.gamma, args.batch_size, args.mem_capacity)
         
-        self.num_updates = args.num_updates
-        
-    def __del__(self):
+    def close(self):
         self.env.close()
+        if self.env_play:
+            self.env_play.close()
     
     def make_env(self, env_name):
         env = gym.make(env_name)
-        #env = NoopEnv(env, noop_max=30)
-        #env = MaxAndSkipEnv(env, skip=4)
+        env = NoopEnv(env, noop_max=30)
+        env = MaxAndSkipEnv(env, skip=4)
         env = TransformsFrame(env)
         return env
     
-    def train(self, weight_dir):
-        state = self.env.reset()
+    def make_env_play(self, env_name):
+        env = gym.make(env_name)
+        env = SkipEnv(env, skip=4)
+        env = TransformsFrame(env)
+        return env
+    
+    def train(self):
+        hyper_params = {}
+        hyper_params['Env Name'] = self.args.env_name
+        hyper_params['Wieght Dir'] = self.args.weight_dir
+        hyper_params['Learning Rate'] = self.args.lr
+        hyper_params['Gamma(Q-Learning)'] = self.args.gamma
+        hyper_params['Batch Size'] = self.args.batch_size
+        hyper_params['Memory Capacity'] = self.args.mem_capacity
+        hyper_params['Num Updates'] = self.args.num_updates
+        
+        for key in hyper_params.keys():
+            print(f'{key}: {hyper_params[key]}')
+        #experiment.log_parameters(hyper_params)
+        
+        (state, _) = self.env.reset()
         done_num = 0
         episode_reward= 0
         rewards = []
-        for i in tqdm(range(self.num_updates)):
+        for i in tqdm(range(self.args.num_updates)):
             action = self.agent.get_action(state)
-            state_next, reward, done, _ = self.env.step(action)
+            (state_next, _), reward, done, _ = self.env.step(action)
             #print(f'action: {action} reward: {reward}')
             
             episode_reward += reward
@@ -451,87 +471,61 @@ class Environment:
             #experiment.log_metric('Loss', loss)
             
             if done:
-                state = self.env.reset()
+                (state, _) = self.env.reset()
                 rewards += [episode_reward]
                 episode_reward = 0
                 done_num += 1
                 print(f'finished frames {i+1}, {done_num} times finished, reward {rewards[-1]:.1f}')
             
             if (i+1) % 1000 == 0:
-                self.agent.brain.save_state(self.weight_dir, i+1)
+                self.agent.brain.save_state(self.args.weight_dir, i+1)
     
     def save_movie(self):
-        env_play = gym.make(self.env_name)
-        
-        state = self.env.reset()
-        frame = env_play.reset()
-        frames = [frame]
+        self.env_play = self.make_env_play(self.args.env_name)
+        (state, frame) = self.env_play.reset()
+        frames = [state[0]]
         
         while True:
             action = self.agent.get_action(state)
-            state_next, reward, done, _ = self.env.step(action)
-            frame, _, _, _ = env_play.step(action)
-            
-            reward = torch.FloatTensor([reward])
-            action = torch.from_numpy(action).unsqueeze(0)
-            self.agent.memorize(state, action, state_next, reward)
-            state = state_next
-            
-            frames += [frame]
-            
+            (state, frame), _, done, _ = self.env_play.step(action)
+            frames += [frame[0]]
             if done:
                 break
         
-        env_play.close()
+        self.env_play.close()
         self.save_frames_as_gif(frames)
         
     def save_frames_as_gif(self, frames):
-        #%matplotlib inline
-        #from IPython.display import HTML
-
         import matplotlib.pyplot as plt
         from matplotlib import animation
-
-        base = min(frames[0].shape[1], frames[0].shape[0])
-        plt.figure(figsize=(frames[0].shape[1] / base * 6, frames[0].shape[0] / base * 6), dpi=72, tight_layout=True)
-        patch = plt.imshow(frames[0])
+        
+        ToPIL = transforms.ToPILImage()
+        
+        base = min(frames[0].shape[1], frames[0].shape[2])
+        plt.figure(figsize=(frames[0].shape[1] / base * 6, frames[0].shape[2] / base * 6), dpi=72, tight_layout=True)
+        patch = plt.imshow(ToPIL(frames[0]))
         plt.axis('off')
 
         def animate(i):
-            patch.set_data(frames[i])
+            patch.set_data(ToPIL(frames[i]))
 
-        anim = animation.FuncAnimation(plt.gcf(), animate, frames=len(frames), interval=20)
-        anim.save('output.gif', writer=animation.PillowWriter())
-
-        #HTML(anim.to_jshtml())
+        anim = animation.FuncAnimation(plt.gcf(), animate, frames=len(frames), interval=1)
+        anim.save('output.gif', writer=animation.PillowWriter(fps=100))
 
 
 # In[ ]:
 
 
 def main(args):
-    hyper_params = {}
-    hyper_params['Env Name'] = args.env_name
-    hyper_params['Wieght Dir'] = args.weight_dir
-    hyper_params['Learning Rate'] = args.lr
-    hyper_params['Gamma(Q-Learning)'] = args.gamma
-    hyper_params['Batch Size'] = args.batch_size
-    hyper_params['Memory Capacity'] = args.mem_capacity
-    hyper_params['Num Updates'] = args.num_updates
-    
-    for key in hyper_params.keys():
-        print(f'{key}: {hyper_params[key]}')
-    #experiment.log_parameters(hyper_params)
-    
     env = Environment(args)
     try:
         if args.savemovie:
             env.save_movie()
             return
 
-        env.train(args.weight_dir)
+        env.train()
     finally:
-        env.__del__()
+        env.close()
 
 
 # In[ ]:

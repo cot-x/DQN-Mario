@@ -162,18 +162,19 @@ class IncScoreEnv(gym.Wrapper):
 # In[ ]:
 
 
-class FrameTransforms(gym.ObservationWrapper):
+class TransformsFrame(gym.ObservationWrapper):
     def __init__(self, env):
         super().__init__(env)
         self.width = 128
         self.height = 128
-        self.observation_space = Box(low=0, high=1, shape=(self.height, self.width, 3), dtype=np.float64)
+        self.observation_space = Box(low=0, high=1, shape=(self.height, self.width, 1), dtype=np.float64)
         
     def observation(self, frame):
         frame = frame.transpose(2, 0, 1) # H, W, C -> C, H, W
         frame = torch.from_numpy(frame).float().unsqueeze(0) / 255.0
-        frame_resize = transforms.functional.resize(frame, (self.width, self.height))
-        return (frame_resize, frame)
+        frame_tarns = transforms.functional.resize(frame, (self.width, self.height))
+        frame_tarns = transforms.functional.rgb_to_grayscale(frame_tarns)
+        return (frame_tarns, frame)
 
 
 # In[ ]:
@@ -289,7 +290,7 @@ class Mish(nn.Module):
 
 
 class Net(nn.Module):
-    def __init__(self, dim_out, num_channels=3, conv_dim=32, n_repeat=3):
+    def __init__(self, dim_out, num_channels=1, conv_dim=32, n_repeat=3):
         super().__init__()
         
         model = [
@@ -542,6 +543,7 @@ class Environment:
                 torch.cuda.manual_seed(self.seed)
         
         self.env = self.make_env(args.env_name, self.seed)
+        self.env_play = None
         
         self.args = args
         self.num_actions = self.env.action_space.n
@@ -550,6 +552,8 @@ class Environment:
     
     def close(self):
         self.env.close()
+        if self.env_play:
+            self.env_play.close()
         
     def make_env(self, env_name, seed=None):
         env = gym.make(env_name)
@@ -560,7 +564,7 @@ class Environment:
         env = MaxAndSkipEnv(env, skip=4)
         env = EpisodicLifeEnv(env)
         #env = IncScoreEnv(env)
-        env = FrameTransforms(env)
+        env = TransformsFrame(env)
         
         return env
 
@@ -570,7 +574,7 @@ class Environment:
             env.seed(seed)
         
         env = SkipEnv(env, skip=4)
-        env = FrameTransforms(env)
+        env = TransformsFrame(env)
         
         return env
     
@@ -614,19 +618,19 @@ class Environment:
                 print(f'finished frames {i+1}, {done_num} times finished, reward {rewards[-1]:.1f}')
     
     def save_movie(self):
-        env = self.make_env_play(self.args.env_name, self.seed)
-        (state, frame) = env.reset()
+        self.env_play = self.make_env_play(self.args.env_name, self.seed)
+        (state, frame) = self.env_play.reset()
         frames = [state[0]]
         
         while True:
             action = self.agent.get_action(state)
-            (state, frame), _, done, _ = env.step(action)
+            (state, frame), _, done, _ = self.env_play.step(action)
             frames += [state[0]]
-            env.render()
+            self.env_play.render()
             if done:
                 break
         
-        env.close()
+        self.env_play.close()
         self.save_frames_as_gif(frames)
         
     def save_frames_as_gif(self, frames):
@@ -647,7 +651,7 @@ class Environment:
             patch.set_data(ToPIL(frames[i]))
 
         anim = animation.FuncAnimation(plt.gcf(), animate, frames=len(frames), interval=1)
-        anim.save('output.gif', writer=animation.PillowWriter())
+        anim.save('output.gif', writer=animation.PillowWriter(fps=100))
 
         #HTML(anim.to_jshtml())
 
