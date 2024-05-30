@@ -642,7 +642,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--env_name', type=str, default='ppaquette/SuperMarioBros-1-1-v0')
     parser.add_argument('--weight_dir', type=str, default='weights')
-    parser.add_argument('--lr', type=float, default=0.0001)
+    parser.add_argument('--lr', type=float, default=1e-9)
     parser.add_argument('--mem_capacity', type=int, default=10000)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_updates', type=int, default=100000)
