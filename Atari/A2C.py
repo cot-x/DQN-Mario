@@ -26,9 +26,12 @@ import torch.optim as optim
 import torchvision.transforms as transforms
 from torch.autograd import Variable
 
-import gym
+import gymnasium as gym
 from gym import spaces
 from gym.spaces import Box
+
+import ale_py
+gym.register_envs(ale_py)
 
 import cv2
 cv2.ocl.setUseOpenCL(False)
@@ -57,10 +60,10 @@ class NoopEnv(gym.Wrapper):
         assert noops > 0
         obs = None
         for _ in range(noops):
-            obs, _, done, _ = self.env.step(self.noop_action)
-            if done:
-                obs = self.env.reset(**kwargs)
-        return obs
+            obs, _, terminated, truncated, info = self.env.step(self.noop_action)
+            if terminated or truncated:
+                obs, info = self.env.reset(**kwargs)
+        return obs, info
     
     def step(self, act):
         return self.env.step(act)
@@ -76,21 +79,21 @@ class EpisodicLifeEnv(gym.Wrapper):
         self.was_real_done = True
         
     def step(self, action):
-        obs, reward,  done, info = self.env.step(action)
-        self.was_real_done = done
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        self.was_real_done = terminated or truncated
         lives = self.env.unwrapped.ale.lives()
         if lives < self.lives and lives > 0:
             done = True
         self.lives = lives
-        return obs, reward, done, info
+        return obs, reward, terminated, truncated, info
     
     def reset(self, **kwargs):
         if self.was_real_done:
-            obs = self.env.reset(**kwargs)
+            obs, info = self.env.reset(**kwargs)
         else:
-            obs, _, _, _ = self.env.step(0)
+            obs, _, _, _, info = self.env.step(0)
         self.lives = self.env.unwrapped.ale.lives()
-        return obs
+        return obs, info
 
 
 # In[ ]:
@@ -106,16 +109,16 @@ class MaxAndSkipEnv(gym.Wrapper):
         total_reward = 0.
         done = None
         for i in range(self.skip):
-            obs, reward, done, info = self.env.step(action)
+            obs, reward, terminated, truncated, info = self.env.step(action)
             if i == self.skip - 2:
                 self.obs_buffer[0] = obs
             if i == self.skip - 1:
                 self.obs_buffer[1] = obs
             total_reward += reward
-            if done:
+            if terminated or truncated:
                 break
         max_frame = self.obs_buffer.max(axis=0)
-        return max_frame, total_reward, done, info
+        return max_frame, total_reward, terminated, truncated, info
     
     def reset(self, **kwargs):
         return self.env.reset(**kwargs)
@@ -133,11 +136,11 @@ class SkipEnv(gym.Wrapper):
         total_reward = 0.
         done = None
         for i in range(self.skip):
-            obs, reward, done, info = self.env.step(action)
+            obs, reward, terminated, truncated, info = self.env.step(action)
             total_reward += reward
-            if done:
+            if terminated or truncated:
                 break
-        return obs, total_reward, done, info
+        return obs, total_reward, terminated, truncated, info
     
     def reset(self, **kwargs):
         return self.env.reset(**kwargs)
@@ -151,9 +154,9 @@ class IncScoreEnv(gym.Wrapper):
         super().__init__(env)
     
     def step(self, action):
-        obs, reward, done, info = self.env.step(action)
+        obs, reward, terminated, truncated, info = self.env.step(action)
         reward += 0.1
-        return obs, reward, done, info
+        return obs, reward, terminated, truncated, info
     
     def reset(self, **kwargs):
         return self.env.reset(**kwargs)
@@ -471,7 +474,7 @@ class Brain:
     
     def weights_init(self, module):
         if type(module) == nn.Linear or type(module) == nn.Conv2d or type(module) == nn.ConvTranspose2d:
-            nn.init.kaiming_normal_(module.weight)
+            nn.init.xavier_normal_(module.weight)
             if module.bias is not None:
                 module.bias.data.fill_(0)
     
@@ -556,7 +559,7 @@ class Environment:
             self.env_play.close()
         
     def make_env(self, env_name, seed=None):
-        env = gym.make(env_name)
+        env = gym.make(env_name, render_mode='human')
         if seed is not None:
             env.seed(seed)
         
@@ -569,7 +572,7 @@ class Environment:
         return env
 
     def make_env_play(self, env_name, seed=None):
-        env = gym.make(env_name)
+        env = gym.make(env_name, render_mode='human')
         if seed is not None:
             env.seed(seed)
         
@@ -591,14 +594,14 @@ class Environment:
             print(f'{key}: {hyper_params[key]}')
         #experiment.log_parameters(hyper_params)
         
-        (state, _) = self.env.reset()
+        (state, _), _ = self.env.reset()
         rewards = []
         episode_reward= 0
         done_num = 0
         
         for i in tqdm(range(self.args.num_updates)):
             action = self.agent.get_action(state)
-            (state_next, _), reward, done, _ = self.env.step(action)
+            (state_next, _), reward, terminated, truncated, _ = self.env.step(action)
             self.env.render()
             
             episode_reward += reward
@@ -609,8 +612,8 @@ class Environment:
             
             #experiment.log_metric('Loss', loss) if loss else None
             
-            if done:
-                (state, _) = self.env.reset()
+            if terminated or truncated:
+                (state, _), _ = self.env.reset()
                 rewards += [episode_reward]
                 episode_reward = 0
                 done_num += 1
@@ -619,15 +622,15 @@ class Environment:
     
     def save_movie(self):
         self.env_play = self.make_env_play(self.args.env_name, self.seed)
-        (state, frame) = self.env_play.reset()
+        (state, frame), _ = self.env_play.reset()
         frames = [state[0]]
         
         while True:
             action = self.agent.get_action(state)
-            (state, frame), _, done, _ = self.env_play.step(action)
+            (state, frame), _, terminated, truncated, _ = self.env_play.step(action)
             frames += [state[0]]
             self.env_play.render()
-            if done:
+            if terminated or truncated:
                 break
         
         self.env_play.close()
@@ -675,7 +678,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env_name', type=str, default='BeamRider-v0')
+    parser.add_argument('--env_name', type=str, default='ALE/Breakout-v5')
     parser.add_argument('--weight_dir', type=str, default='weights')
     parser.add_argument('--lr', type=float, default=1e-9)
     parser.add_argument('--mem_capacity', type=int, default=10000)
